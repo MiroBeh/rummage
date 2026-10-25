@@ -7,6 +7,7 @@ import Photos
 struct ReviewView: View {
     @EnvironmentObject var session: SessionViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     /// How far the card has to travel before letting go decides anything. Short
     /// of this it springs back, so a twitch cannot delete a photo.
@@ -14,6 +15,8 @@ struct ReviewView: View {
 
     @State private var dragX: CGFloat = 0
     @State private var isLeaving = false
+    /// Holding the card shows the whole, uncropped photo until you let go.
+    @State private var isPeeking = false
 
     private static let dateFmt: DateFormatter = {
         let f = DateFormatter()
@@ -40,12 +43,15 @@ struct ReviewView: View {
         }
         .overlay(alignment: .leading) { edgeWash(for: .delete) }
         .overlay(alignment: .trailing) { edgeWash(for: .keep) }
+        .overlay { peek }
         .preferredColorScheme(.dark)
         .padding(.top, 54)
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
         .task { await session.start() }
+        // A call or Control Centre can cancel the touch without an end event.
+        .onChange(of: scenePhase) { isPeeking = false }
         .onDisappear {
             // The exit button and the done screen both leave a finished
             // session behind. Anything else — a back gesture, say — would
@@ -73,14 +79,21 @@ struct ReviewView: View {
         return dragX > 0 ? .keep : .delete
     }
 
+    /// Zero minimum distance so letting go of a hold that never moved still
+    /// ends here, which is what closes the peek.
     private var swipe: some Gesture {
-        DragGesture()
+        DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard !isLeaving else { return }
+                guard !isLeaving, !isPeeking else { return }
                 dragX = value.translation.width
             }
             .onEnded { value in
                 guard !isLeaving else { return }
+                if isPeeking {
+                    // A peek never decides anything, however far the finger moved.
+                    withAnimation(.easeOut(duration: 0.15)) { isPeeking = false }
+                    return
+                }
                 let travelled = value.translation.width
                 let predicted = value.predictedEndTranslation.width
                 let commit = Self.commitDistance
@@ -94,10 +107,24 @@ struct ReviewView: View {
             }
     }
 
+    /// Moving more than 10 pt first cancels the hold, so a swipe stays a swipe.
+    private var hold: some Gesture {
+        LongPressGesture(minimumDuration: 0.3, maximumDistance: 10)
+            .onEnded { _ in
+                guard !isLeaving else { return }
+                Haptics.peek()
+                withAnimation(.easeOut(duration: 0.15)) {
+                    dragX = 0
+                    isPeeking = true
+                }
+            }
+    }
+
     /// The buttons and the gesture both come through here, so they do visibly
     /// the same thing.
     private func decide(_ decision: SwipeDecision) {
-        guard !isLeaving else { return }
+        // A second finger on a button while peeking must not decide anything.
+        guard !isLeaving, !isPeeking else { return }
         isLeaving = true
         withAnimation(.easeOut(duration: 0.2)) {
             dragX = decision == .keep ? 720 : -720
@@ -186,6 +213,11 @@ struct ReviewView: View {
                     .offset(x: dragX)
                     .rotationEffect(.degrees(Double(dragX) / 16), anchor: .bottom)
                     .gesture(swipe)
+                    .simultaneousGesture(hold)
+                    .accessibilityAction(named: isPeeking ? "Hide full photo" : "Show full photo") {
+                        isPeeking.toggle()
+                    }
+                    .accessibilityAction(.escape) { isPeeking = false }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -221,6 +253,16 @@ struct ReviewView: View {
                 alignment: isKeep ? .topLeading : .topTrailing
             )
             .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var peek: some View {
+        if isPeeking, let photo = session.current {
+            PhotoPeekView(photo: photo)
+                .transition(.opacity)
+                // The touch that opened it stays with the card's gestures.
+                .allowsHitTesting(false)
         }
     }
 
@@ -330,7 +372,7 @@ struct ReviewView: View {
             .padding(.top, 14)
             .padding(.bottom, 28)
         } else {
-            HintLine(text: "Swipe the photo, or tap a button")
+            HintLine(text: "Swipe the photo, or hold it to see all of it")
                 .padding(.top, 14)
                 .padding(.bottom, 28)
         }
@@ -368,5 +410,41 @@ struct PhotoCardView: View {
                 )
             }
         }
+    }
+}
+
+/// The whole photo, fitted to the screen, while the card is held.
+struct PhotoPeekView: View {
+    let photo: Photo
+    @Environment(\.displayScale) private var displayScale
+    @State private var image: UIImage?
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.black.opacity(0.92)
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .padding(12)
+                } else {
+                    // shortcut: loads only once the hold succeeds, so an iCloud-only photo shows a spinner first; prefetch on touch-down if testers notice.
+                    ProgressView().tint(RummageTheme.text2)
+                }
+            }
+            .task(id: photo.id) {
+                image = await PhotoLibraryService.image(
+                    for: photo,
+                    targetSize: CGSize(
+                        width: geo.size.width * displayScale,
+                        height: geo.size.height * displayScale
+                    ),
+                    contentMode: .aspectFit
+                )
+            }
+        }
+        .ignoresSafeArea()
+        .accessibilityLabel("Full photo")
     }
 }
