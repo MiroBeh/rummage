@@ -64,8 +64,13 @@ class PhotoLibraryService: ObservableObject, PhotoSource {
 
     // MARK: - Images
 
-    /// The photo at display size, for the review card.
-    static func image(for photo: Photo, targetSize: CGSize) async -> UIImage? {
+    /// The photo at display size: filled for the review card, fitted for the
+    /// hold-to-peek view.
+    static func image(
+        for photo: Photo,
+        targetSize: CGSize,
+        contentMode: PHImageContentMode = .aspectFill
+    ) async -> UIImage? {
         guard let asset = photo.asset else { return nil }
         return await withCheckedContinuation { continuation in
             let options = PHImageRequestOptions()
@@ -75,7 +80,7 @@ class PhotoLibraryService: ObservableObject, PhotoSource {
             PHImageManager.default().requestImage(
                 for: asset,
                 targetSize: targetSize,
-                contentMode: .aspectFill,
+                contentMode: contentMode,
                 options: options
             ) { image, _ in
                 continuation.resume(returning: image)

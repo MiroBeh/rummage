@@ -14,4 +14,10 @@ enum Haptics {
         let style: UIImpactFeedbackGenerator.FeedbackStyle = decision == .delete ? .medium : .light
         UIImpactFeedbackGenerator(style: style).impactOccurred()
     }
+
+    /// A light tap when holding the card opens the full photo.
+    static func peek() {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
 }
